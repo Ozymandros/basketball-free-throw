@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🏀 Free Throw Fun!</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; touch-action: none; font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif; }
+  #game { position: fixed; inset: 0; }
+  .hud { position: fixed; top: 12px; left: 0; right: 0; display: flex; justify-content: center; gap: 14px; pointer-events: none; z-index: 10; }
+  .card {
+    background: rgba(255,255,255,0.92); border-radius: 18px; padding: 8px 18px;
+    text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.25); min-width: 90px;
+  }
+  .card .label { font-size: 12px; color: #888; font-weight: bold; letter-spacing: 1px; }
+  .card .value { font-size: 30px; font-weight: bold; color: #ff6d00; line-height: 1.1; }
+  #msg {
+    position: fixed; top: 22%; left: 0; right: 0; text-align: center; pointer-events: none;
+    font-size: 54px; font-weight: bold; color: #fff; z-index: 10;
+    text-shadow: 0 3px 0 rgba(0,0,0,0.3), 0 0 24px rgba(255,255,255,0.5);
+    opacity: 0; transition: opacity 0.2s, transform 0.3s; transform: scale(0.6);
+  }
+  #msg.show { opacity: 1; transform: scale(1); }
+  #hint {
+    position: fixed; bottom: 26px; left: 0; right: 0; text-align: center; pointer-events: none; z-index: 10;
+    font-size: 22px; font-weight: bold; color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    animation: bob 1.6s ease-in-out infinite;
+  }
+  @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  .confetti { position: fixed; font-size: 28px; pointer-events: none; z-index: 20; will-change: transform; }
+  #sound {
+    position: fixed; top: 12px; right: 12px; z-index: 11; font-size: 24px; border: none;
+    background: rgba(255,255,255,0.92); border-radius: 50%; width: 48px; height: 48px;
+    cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div class="hud">
+  <div class="card"><div class="label">SCORE</div><div class="value" id="score">0</div></div>
+  <div class="card"><div class="label">STREAK</div><div class="value" id="streak">0</div></div>
+  <div class="card"><div class="label">BEST</div><div class="value" id="best">0</div></div>
+</div>
+<button id="sound" title="Sound on/off">🔊</button>
+<div id="msg"></div>
+<div id="hint">👆 Drag up to shoot!</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+// ---------- Scene setup ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 20, 60);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 2.1, 3.4);
+camera.lookAt(0, 2.7, -4.6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.getElementById('game').appendChild(renderer.domElement);
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const sun = new THREE.DirectionalLight(0xfff4e0, 0.9);
+sun.position.set(5, 12, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.left = -10; sun.shadow.camera.right = 10;
+sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+scene.add(sun);
+
+// ---------- Court ----------
+const floorTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d69b5c'; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = 'rgba(140,85,35,0.35)'; g.lineWidth = 3;
+  for (let x = 0; x <= 256; x += 32) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 256); g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(8, 8);
+  return t;
+})();
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshLambertMaterial({ map: floorTex })
+);
+floor.rotation.x = -Math.PI/2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// Court lines
+const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const ftLine = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.06), lineMat);
+ftLine.rotation.x = -Math.PI/2; ftLine.position.set(0, 0.005, 0);
+scene.add(ftLine);
+const keyLeft = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 5.2), lineMat);
+keyLeft.rotation.x = -Math.PI/2; keyLeft.position.set(-1.8, 0.005, -2.6);
+scene.add(keyLeft);
+const keyRight = keyLeft.clone(); keyRight.position.x = 1.8;
+scene.add(keyRight);
+const circGeo = new THREE.RingGeometry(1.75, 1.81, 48);
+const circ = new THREE.Mesh(circGeo, lineMat);
+circ.rotation.x = -Math.PI/2; circ.position.set(0, 0.005, 0);
+scene.add(circ);
+
+// Bleachers (simple colorful blocks behind hoop)
+for (let row = 0; row < 4; row++) {
+  const b = new THREE.Mesh(
+    new THREE.BoxGeometry(24, 0.8, 1.6),
+    new THREE.MeshLambertMaterial({ color: [0x4fc3f7, 0x81c784, 0xffb74d, 0xe57373][row] })
+  );
+  b.position.set(0, 0.4 + row*0.8, -9.5 - row*1.6);
+  scene.add(b);
+}
+
+// ---------- Hoop ----------
+const HOOP = { x: 0, y: 3.05, z: -4.6, r: 0.30, tube: 0.022 };
+const BOARD = { z: HOOP.z - 0.42, w: 1.8, h: 1.1, bottom: 2.75 };
+
+// Pole + arm
+const poleMat = new THREE.MeshLambertMaterial({ color: 0x555b66 });
+const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 3.9, 12), poleMat);
+pole.position.set(0, 1.95, BOARD.z - 0.55);
+scene.add(pole);
+const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.55), poleMat);
+arm.position.set(0, 3.55, BOARD.z - 0.27);
+scene.add(arm);
+
+// Backboard
+const board = new THREE.Mesh(
+  new THREE.BoxGeometry(BOARD.w, BOARD.h, 0.05),
+  new THREE.MeshLambertMaterial({ color: 0xffffff })
+);
+board.position.set(0, BOARD.bottom + BOARD.h/2, BOARD.z);
+board.castShadow = true;
+scene.add(board);
+// Backboard target square
+const sq = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.45), new THREE.MeshBasicMaterial({ color: 0xff6d00, side: THREE.DoubleSide }));
+const sqInner = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.35), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }));
+sq.position.set(0, 3.25, BOARD.z + 0.03); sqInner.position.set(0, 3.25, BOARD.z + 0.031);
+scene.add(sq); scene.add(sqInner);
+
+// Rim
+const rim = new THREE.Mesh(
+  new THREE.TorusGeometry(HOOP.r, HOOP.tube, 12, 36),
+  new THREE.MeshLambertMaterial({ color: 0xff3d00 })
+);
+rim.rotation.x = Math.PI/2;
+rim.position.set(HOOP.x, HOOP.y, HOOP.z);
+rim.castShadow = true;
+scene.add(rim);
+
+// Net (wireframe cone)
+const net = new THREE.Mesh(
+  new THREE.CylinderGeometry(HOOP.r, HOOP.r*0.55, 0.38, 10, 4, true),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.75 })
+);
+net.position.set(HOOP.x, HOOP.y - 0.20, HOOP.z);
+scene.add(net);
+
+// Net animation (swish ripple)
+const netPos = net.geometry.attributes.position;
+const netOrig = netPos.array.slice();
+let netTime = -1; // -1 = inactive
+function kickNet() { netTime = 0; }
+function animateNet(dt) {
+  if (netTime < 0) return;
+  netTime += dt;
+  const k = Math.exp(-netTime * 3.2);        // damping
+  if (k < 0.01) {                            // done: restore shape
+    netPos.array.set(netOrig);
+    netPos.needsUpdate = true;
+    netTime = -1;
+    return;
+  }
+  const sway = Math.sin(netTime * 13) * k;
+  for (let i = 0; i < netPos.count; i++) {
+    const ox = netOrig[i*3], oy = netOrig[i*3+1], oz = netOrig[i*3+2];
+    const w = (0.19 - oy) / 0.38;            // 0 at rim, 1 at bottom
+    const radial = 1 + w * 0.35 * sway;      // ripple in/out
+    netPos.array[i*3]   = ox * radial;
+    netPos.array[i*3+1] = oy - w * k * 0.16; // stretch down, spring back
+    netPos.array[i*3+2] = oz * radial;
+  }
+  netPos.needsUpdate = true;
+}
+
+// ---------- Ball ----------
+const BALL_R = 0.125;
+// Equirectangular basketball texture: leather color, pebble grain, real seam layout
+function drawSeams(g, w, h, color, lw) {
+  g.strokeStyle = color; g.lineWidth = lw; g.lineCap = 'round';
+  // equator
+  g.beginPath(); g.moveTo(0, h/2); g.lineTo(w, h/2); g.stroke();
+  // pole-to-pole great circle (two vertical lines, half a world apart)
+  [w*0.25, w*0.75].forEach(x => {
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+  });
+  // two curved panel seams (cosine waves on the equirect map)
+  [-1, 1].forEach(s => {
+    g.beginPath();
+    for (let x = 0; x <= w; x += 4) {
+      const y = h * (0.5 + s * 0.30 * Math.cos(2 * Math.PI * x / w));
+      x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.stroke();
+  });
+}
+const ballMaps = (() => {
+  const W = 1024, H = 512;
+  // color map
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#c95d17'); grad.addColorStop(0.5, '#e8731f'); grad.addColorStop(1, '#c95d17');
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+  // pebble grain: thousands of tiny light/dark speckles
+  for (let i = 0; i < 9000; i++) {
+    const x = Math.random()*W, y = Math.random()*H, r = 0.7 + Math.random()*1.5;
+    g.fillStyle = Math.random() < 0.5 ? 'rgba(255,180,110,0.25)' : 'rgba(90,40,5,0.22)';
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI*2); g.fill();
+  }
+  drawSeams(g, W, H, 'rgba(40,18,4,0.9)', 7);
+  // bump map: mid gray base, bright pebbles (raised), dark seams (grooves)
+  const b = document.createElement('canvas'); b.width = W; b.height = H;
+  const gb = b.getContext('2d');
+  gb.fillStyle = '#808080'; gb.fillRect(0, 0, W, H);
+  for (let i = 0; i < 9000; i++) {
+    const x = Math.random()*W, y = Math.random()*H, r = 0.7 + Math.random()*1.5;
+    gb.fillStyle = 'rgba(255,255,255,0.5)';
+    gb.beginPath(); gb.arc(x, y, r, 0, Math.PI*2); gb.fill();
+  }
+  drawSeams(gb, W, H, '#000000', 9);
+  const map = new THREE.CanvasTexture(c);
+  const bump = new THREE.CanvasTexture(b);
+  map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return { map, bump };
+})();
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_R, 48, 48),
+  new THREE.MeshPhongMaterial({
+    map: ballMaps.map,
+    bumpMap: ballMaps.bump,
+    bumpScale: 0.0045,
+    specular: 0x3a2410,
+    shininess: 14
+  })
+);
+ball.castShadow = true;
+scene.add(ball);
+
+const BALL_START = new THREE.Vector3(0, 1.55, 0.9);
+let vel = new THREE.Vector3();
+let flying = false;
+let scoredThisShot = false;
+let missedThisShot = false;
+let prevY = 0;
+let bounces = 0;
+let shotTimer = 0;
+
+// Trajectory preview dots
+const DOTS = 18;
+const dots = [];
+const dotMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+for (let i = 0; i < DOTS; i++) {
+  const d = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), dotMat);
+  d.visible = false;
+  scene.add(d);
+  dots.push(d);
+}
+
+function resetBall() {
+  ball.position.copy(BALL_START);
+  vel.set(0, 0, 0);
+  flying = false;
+  scoredThisShot = false;
+  missedThisShot = false;
+  bounces = 0;
+  shotTimer = 0;
+}
+resetBall();
+
+// ---------- Sounds (WebAudio, no files) ----------
+let soundOn = true;
+let actx = null;
+function audio() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+// Oscillator with envelope + optional pitch slide
+function tone(freq, dur, type, vol, when, slideTo) {
+  if (!soundOn) return;
+  const ctx = audio(), t0 = ctx.currentTime + (when || 0);
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, t0);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol || 0.15, t0 + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(ctx.destination);
+  o.start(t0); o.stop(t0 + dur + 0.02);
+}
+// Filtered noise burst (whoosh, swish, thud, crowd)
+let noiseBuf = null;
+function noise(dur, vol, when, fStart, fEnd, type, q) {
+  if (!soundOn) return;
+  const ctx = audio(), t0 = ctx.currentTime + (when || 0);
+  if (!noiseBuf) {
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  const src = ctx.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+  const f = ctx.createBiquadFilter();
+  f.type = type || 'bandpass'; f.Q.value = q || 1;
+  f.frequency.setValueAtTime(fStart, t0);
+  if (fEnd) f.frequency.exponentialRampToValueAtTime(fEnd, t0 + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + dur * 0.2);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  src.connect(f).connect(g).connect(ctx.destination);
+  src.start(t0); src.stop(t0 + dur + 0.02);
+}
+const sfx = {
+  // Real ball thump: pitch drop + rubbery snap, louder for harder bounces
+  bounce: (speed) => {
+    const v = Math.min(0.35, 0.1 + (speed || 3) * 0.04);
+    tone(160, 0.18, 'sine', v, 0, 55);
+    noise(0.05, v * 0.5, 0, 700, 150, 'lowpass');
+  },
+  // Metallic clang: two detuned partials ringing out
+  rim: () => {
+    tone(523, 0.35, 'triangle', 0.12);
+    tone(792, 0.28, 'triangle', 0.07);
+    tone(1244, 0.15, 'sine', 0.04);
+  },
+  // Backboard thud: woody knock
+  board: () => {
+    tone(210, 0.12, 'sine', 0.18, 0, 120);
+    noise(0.07, 0.12, 0, 900, 250, 'lowpass');
+  },
+  // Shot release: soft rising whoosh
+  shoot: () => noise(0.3, 0.1, 0, 400, 2200, 'bandpass', 0.8),
+  // Score: net swish + happy chime + crowd cheer
+  swish: () => {
+    noise(0.25, 0.22, 0, 3500, 900, 'bandpass', 1.5);          // net swish
+    tone(523, 0.14, 'sine', 0.14, 0.10);                        // C5
+    tone(659, 0.14, 'sine', 0.14, 0.20);                        // E5
+    tone(784, 0.14, 'sine', 0.14, 0.30);                        // G5
+    tone(1047, 0.4, 'sine', 0.16, 0.40);                        // C6
+    tone(1319, 0.5, 'triangle', 0.06, 0.40);                    // sparkle
+    noise(1.1, 0.14, 0.15, 800, 1600, 'bandpass', 0.5);         // crowd cheer swell
+  },
+  // Miss: gentle cartoon "wah-wah", never harsh
+  miss: () => {
+    tone(392, 0.22, 'triangle', 0.08, 0, 330);
+    tone(330, 0.35, 'triangle', 0.08, 0.22, 262);
+  }
+};
+document.getElementById('sound').addEventListener('click', e => {
+  soundOn = !soundOn;
+  e.target.textContent = soundOn ? '🔊' : '🔇';
+});
+
+// ---------- UI ----------
+let score = 0, streak = 0, best = 0;
+const $ = id => document.getElementById(id);
+const CHEERS = ['GREAT SHOT! 🎉', 'SWISH! 🏀', 'AWESOME! ⭐', 'YOU ROCK! 🌟', 'NICE ONE! 👏', 'BOOM! 💥'];
+const MISSES = ['So close! 💪', 'Try again! 🙂', 'Almost! 🎯', 'You got this! ✨'];
+let msgTimer = null;
+function showMsg(text) {
+  const m = $('msg');
+  m.textContent = text;
+  m.classList.add('show');
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => m.classList.remove('show'), 1400);
+}
+function confetti() {
+  const emojis = ['🎉','⭐','🏀','✨','🎊'];
+  for (let i = 0; i < 24; i++) {
+    const el = document.createElement('div');
+    el.className = 'confetti';
+    el.textContent = emojis[Math.floor(Math.random()*emojis.length)];
+    const x = innerWidth/2 + (Math.random()-0.5)*200;
+    el.style.left = x + 'px';
+    el.style.top = (innerHeight*0.3) + 'px';
+    document.body.appendChild(el);
+    const dx = (Math.random()-0.5)*400, dy = 300 + Math.random()*400, rot = (Math.random()-0.5)*720;
+    el.animate([
+      { transform: 'translate(0,0) rotate(0deg)', opacity: 1 },
+      { transform: `translate(${dx}px,${dy}px) rotate(${rot}deg)`, opacity: 0 }
+    ], { duration: 1200 + Math.random()*600, easing: 'cubic-bezier(0.2,0.6,0.4,1)' })
+    .onfinish = () => el.remove();
+  }
+}
+function onScore() {
+  score++;
+  streak++;
+  if (streak > best) best = streak;
+  $('score').textContent = score;
+  $('streak').textContent = streak;
+  $('best').textContent = best;
+  showMsg(CHEERS[Math.floor(Math.random()*CHEERS.length)]);
+  confetti();
+  kickNet();
+  sfx.swish();
+}
+function onMiss() {
+  if (missedThisShot) return;
+  missedThisShot = true;
+  streak = 0;
+  $('streak').textContent = 0;
+  showMsg(MISSES[Math.floor(Math.random()*MISSES.length)]);
+  sfx.miss();
+}
+
+// ---------- Input: drag to shoot ----------
+let dragging = false;
+let dragStart = { x: 0, y: 0 };
+let launchVel = new THREE.Vector3();
+
+function computeLaunch(cx, cy) {
+  const dy = Math.max(0, dragStart.y - cy);           // drag up
+  const dx = cx - dragStart.x;                        // drag sideways
+  const power = Math.min(1.25, dy / (innerHeight * 0.42));
+  launchVel.set(
+    (dx / innerWidth) * 4.5,
+    power * 8.6,
+    -power * 5.9
+  );
+  return power;
+}
+function previewTrajectory() {
+  const g = -9.8, dt = 0.07;
+  let p = BALL_START.clone(), v = launchVel.clone();
+  for (let i = 0; i < DOTS; i++) {
+    v.y += g * dt;
+    p.x += v.x * dt; p.y += v.y * dt; p.z += v.z * dt;
+    dots[i].position.copy(p);
+    dots[i].visible = p.y > 0;
+  }
+}
+function hideDots() { dots.forEach(d => d.visible = false); }
+
+const el = renderer.domElement;
+el.addEventListener('pointerdown', e => {
+  if (flying) return;
+  audio(); // unlock audio on first gesture
+  dragging = true;
+  dragStart = { x: e.clientX, y: e.clientY };
+  $('hint').style.display = 'none';
+});
+el.addEventListener('pointermove', e => {
+  if (!dragging || flying) return;
+  computeLaunch(e.clientX, e.clientY);
+  previewTrajectory();
+});
+el.addEventListener('pointerup', e => {
+  if (!dragging || flying) return;
+  dragging = false;
+  hideDots();
+  const power = computeLaunch(e.clientX, e.clientY);
+  if (power < 0.12) return;              // tiny drag = cancel
+  vel.copy(launchVel);
+  flying = true;
+  prevY = ball.position.y;
+  sfx.shoot();
+});
+el.addEventListener('pointercancel', () => { dragging = false; hideDots(); });
+
+// ---------- Physics ----------
+const G = -9.8;
+const tmpV = new THREE.Vector3();
+
+function physics(dt) {
+  if (!flying) {
+    // idle bobbing so the ball feels alive
+    ball.position.y = BALL_START.y + Math.sin(performance.now()/500) * 0.03;
+    ball.rotation.y += dt * 0.5;
+    return;
+  }
+  shotTimer += dt;
+  prevY = ball.position.y;
+  vel.y += G * dt;
+  ball.position.x += vel.x * dt;
+  ball.position.y += vel.y * dt;
+  ball.position.z += vel.z * dt;
+  ball.rotation.x -= vel.z * dt * 4;
+
+  const p = ball.position;
+
+  // Backboard collision
+  if (p.z - BALL_R < BOARD.z + 0.025 && p.z > BOARD.z - 0.2 && vel.z < 0 &&
+      Math.abs(p.x) < BOARD.w/2 && p.y > BOARD.bottom && p.y < BOARD.bottom + BOARD.h) {
+    p.z = BOARD.z + 0.025 + BALL_R;
+    vel.z = -vel.z * 0.55;
+    vel.x *= 0.9;
+    sfx.board();
+  }
+
+  // Rim collision (nearest point on the rim circle)
+  const offX = p.x - HOOP.x, offZ = p.z - HOOP.z;
+  const horiz = Math.sqrt(offX*offX + offZ*offZ);
+  if (horiz > 0.0001) {
+    const ringX = HOOP.x + (offX/horiz) * HOOP.r;
+    const ringZ = HOOP.z + (offZ/horiz) * HOOP.r;
+    tmpV.set(p.x - ringX, p.y - HOOP.y, p.z - ringZ);
+    const d = tmpV.length();
+    const minD = BALL_R + HOOP.tube;
+    if (d < minD && d > 0.0001) {
+      tmpV.divideScalar(d);
+      // push out
+      p.x = ringX + tmpV.x * minD;
+      p.y = HOOP.y + tmpV.y * minD;
+      p.z = ringZ + tmpV.z * minD;
+      // reflect velocity
+      const dot = vel.dot(tmpV);
+      vel.x -= 1.7 * dot * tmpV.x;
+      vel.y -= 1.7 * dot * tmpV.y;
+      vel.z -= 1.7 * dot * tmpV.z;
+      vel.multiplyScalar(0.75);
+      sfx.rim();
+    }
+  }
+
+  // Score: crossed the rim plane going down, inside the ring
+  if (!scoredThisShot && prevY > HOOP.y && p.y <= HOOP.y && vel.y < 0) {
+    if (horiz < HOOP.r - BALL_R*0.35) {
+      scoredThisShot = true;
+      onScore();
+      // funnel through the net
+      vel.x *= 0.2; vel.z *= 0.2;
+    } else if (!missedThisShot && p.z < HOOP.z + 1.2) {
+      onMiss();
+    }
+  }
+
+  // Floor bounce
+  if (p.y < BALL_R && vel.y < 0) {
+    p.y = BALL_R;
+    const impact = -vel.y;
+    vel.y = -vel.y * 0.55;
+    vel.x *= 0.8; vel.z *= 0.8;
+    bounces++;
+    if (Math.abs(vel.y) > 0.8) sfx.bounce(impact);
+    if (!scoredThisShot) onMiss();
+  }
+
+  // Reset when done
+  if (bounces >= 3 || shotTimer > 5 || p.y < -1 || Math.abs(p.z) > 15 || Math.abs(p.x) > 12) {
+    if (!scoredThisShot) onMiss();
+    resetBall();
+  }
+}
+
+// ---------- Main loop ----------
+let last = performance.now();
+function loop(now) {
+  requestAnimationFrame(loop);
+  let dt = Math.min((now - last) / 1000, 0.033);
+  last = now;
+  // substeps for stable collisions
+  const steps = 3;
+  for (let i = 0; i < steps; i++) physics(dt / steps);
+  animateNet(dt);
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(loop);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

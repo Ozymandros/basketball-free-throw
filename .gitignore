@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs & caches
+*.log
+.cache/
+.temp/
+.tmp/
+
+# Local env
+.env
+.env.*
