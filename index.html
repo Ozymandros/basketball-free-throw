@@ -254,7 +254,43 @@ const ball = new THREE.Mesh(
 ball.castShadow = true;
 scene.add(ball);
 
+// ---------- Shot spots (moves to a new random spot after each make) ----------
 const BALL_START = new THREE.Vector3(0, 1.55, 0.9);
+const forwardDir = new THREE.Vector3(0, 0, -1);   // horizontal, ball -> hoop
+const rightDir = new THREE.Vector3(1, 0, 0);
+let pendingNewSpot = false;
+
+// Floor marker showing where you shoot from
+const spotMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.32, 0.44, 32),
+  new THREE.MeshBasicMaterial({ color: 0xffe600, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
+);
+spotMarker.rotation.x = -Math.PI/2;
+scene.add(spotMarker);
+
+function setSpot(angleDeg, dist) {
+  const a = angleDeg * Math.PI / 180;
+  // position around the hoop at the given angle/distance (angle 0 = straight on)
+  const sx = HOOP.x + Math.sin(a) * dist;
+  const sz = HOOP.z + Math.cos(a) * dist;
+  BALL_START.set(sx, 1.55, sz);
+  forwardDir.set(HOOP.x - sx, 0, HOOP.z - sz).normalize();
+  rightDir.set(-forwardDir.z, 0, forwardDir.x);
+  spotMarker.position.set(sx, 0.006, sz);
+  // camera sits behind the ball, looking at the hoop
+  camera.position.set(sx - forwardDir.x * 2.5, 2.1, sz - forwardDir.z * 2.5);
+  camera.lookAt(HOOP.x, 2.7, HOOP.z);
+}
+function randomSpot() {
+  // 1 in 3 shots from (near) center, otherwise anywhere in a wide -75° to +75° arc
+  const angle = Math.random() < 1/3
+    ? (Math.random() * 16) - 8                     // center-ish: -8° to +8°
+    : (Math.random() * 150) - 75;                  // wide arc: -75° to +75°
+  const dist = 3.2 + Math.random() * 2.0;          // 3.2 m to 5.2 m
+  setSpot(angle, dist);
+}
+setSpot(0, 5.5); // start at the classic free throw spot
+
 let vel = new THREE.Vector3();
 let flying = false;
 let scoredThisShot = false;
@@ -275,6 +311,11 @@ for (let i = 0; i < DOTS; i++) {
 }
 
 function resetBall() {
+  if (pendingNewSpot) {
+    pendingNewSpot = false;
+    randomSpot();
+    showMsg('New spot! 📍');
+  }
   ball.position.copy(BALL_START);
   vel.set(0, 0, 0);
   flying = false;
@@ -412,6 +453,7 @@ function onScore() {
   confetti();
   kickNet();
   sfx.swish();
+  pendingNewSpot = true; // move to a new random spot after a make
 }
 function onMiss() {
   if (missedThisShot) return;
@@ -431,10 +473,11 @@ function computeLaunch(cx, cy) {
   const dy = Math.max(0, dragStart.y - cy);           // drag up
   const dx = cx - dragStart.x;                        // drag sideways
   const power = Math.min(1.25, dy / (innerHeight * 0.42));
+  const side = (dx / innerWidth) * 4.5;
   launchVel.set(
-    (dx / innerWidth) * 4.5,
+    forwardDir.x * power * 5.9 + rightDir.x * side,
     power * 8.6,
-    -power * 5.9
+    forwardDir.z * power * 5.9 + rightDir.z * side
   );
   return power;
 }
@@ -493,7 +536,7 @@ function physics(dt) {
   ball.position.x += vel.x * dt;
   ball.position.y += vel.y * dt;
   ball.position.z += vel.z * dt;
-  ball.rotation.x -= vel.z * dt * 4;
+  ball.rotateOnWorldAxis(rightDir, Math.hypot(vel.x, vel.z) * dt * 4); // backspin
 
   const p = ball.position;
 
